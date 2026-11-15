@@ -3150,3 +3150,175 @@ def test_nkom_schedule_lookup_reports_missing_pdf_links_as_shape_error():
 
     with pytest.raises(ResponseShapeError, match="schedule PDF"):
         _schedule_links(page)
+
+
+def _rochefort_calendar(
+    year: int = 2026,
+    *,
+    short_weekdays: bool = False,
+    missing: set[datetime.date] | frozenset[datetime.date] = frozenset(),
+    mismatched: dict[datetime.date, str] | None = None,
+):
+    """A synthetic Rochefort 3-column x 4-block colour calendar."""
+    import calendar
+
+    from waste_collection_schedule.parsers import (
+        PdfTextFragment,
+        PdfVector,
+        PdfWordLayout,
+    )
+    from waste_collection_schedule.service.FrenchColourCalendar import _MONTHS
+
+    month_names = list(_MONTHS)
+    green = (0.3, 0.0, 1.0, 0.0)
+    blue = (0.55, 0.23, 0.0, 0.0)
+    colours = {"green": green, "blue": blue}
+    # 2026's odd ISO weeks are green; the 53-week year flips 2027 to even.
+    green_parity = 1 if year % 2 == 0 else 0
+    weekday_words = (
+        ("L", "M", "M", "J", "V", "S", "D")
+        if short_weekdays
+        else ("LUN", "MAR", "MER", "JEU", "VEN", "SAM", "DIM")
+    )
+    mismatched = mismatched or {}
+
+    lines = [PdfTextFragment(0, f"CALENDRIER DE COLLECTE {year}", 20, 850)]
+    words, vectors = [], []
+    for index in range(12):
+        month, column = index + 1, index % 3
+        title_y = 800 - (index // 3) * 160
+        header_y = title_y - 14
+        chunk_start = 20 + column * 160
+        lines.append(
+            PdfTextFragment(
+                0,
+                month_names[month - 1].upper(),
+                chunk_start + 60,
+                title_y,
+            )
+        )
+        words.extend(
+            PdfTextFragment(0, name, chunk_start + weekday * 20, header_y)
+            for weekday, name in enumerate(weekday_words)
+        )
+        for day in range(1, calendar.monthrange(year, month)[1] + 1):
+            d = D(year, month, day)
+            if d in missing:
+                continue
+            position = d.weekday() + day - 1
+            x = chunk_start + d.weekday() * 20
+            y = header_y - 14 - (position // 7) * 14
+            words.append(PdfTextFragment(0, str(day), x, y))
+            colour = "green" if d.isocalendar().week % 2 == green_parity else "blue"
+            fill = colours[mismatched.get(d, colour)]
+            vectors.append(PdfVector(0, x - 8, y - 6, x + 8, y + 6, None, fill))
+    return PdfWordLayout(lines, words, vectors)
+
+
+@pytest.mark.parametrize(
+    "sector,present,absent",
+    [
+        (
+            "1",
+            {
+                (D(2026, 1, 12), "general"),
+                (D(2026, 1, 15), "recycling"),
+                (D(2026, 6, 8), "general"),
+            },
+            {
+                (D(2026, 1, 5), "general"),
+                (D(2026, 1, 8), "recycling"),
+            },
+        ),
+        (
+            "2",
+            {
+                (D(2026, 1, 5), "general"),
+                (D(2026, 1, 15), "recycling"),
+                (D(2026, 6, 1), "general"),
+            },
+            {
+                (D(2026, 1, 12), "general"),
+                (D(2026, 1, 8), "recycling"),
+            },
+        ),
+        (
+            "5",
+            {
+                (D(2026, 1, 14), "general"),
+                (D(2026, 1, 8), "recycling"),
+                (D(2026, 6, 10), "general"),
+            },
+            {
+                (D(2026, 1, 7), "general"),
+                (D(2026, 1, 1), "recycling"),
+            },
+        ),
+        (
+            "9",
+            {
+                (D(2026, 1, 6), "general"),
+                (D(2026, 1, 10), "general"),
+                (D(2026, 1, 7), "recycling"),
+                (D(2026, 8, 4), "general"),
+                (D(2026, 8, 5), "recycling"),
+            },
+            set(),
+        ),
+    ],
+)
+def test_rochefort_sector_rules(sector, present, absent):
+    from waste_collection_schedule.service.FrenchColourCalendar import (
+        rochefort_ocean_rows,
+    )
+
+    rows = rochefort_ocean_rows(
+        [_rochefort_calendar()], SimpleNamespace(params={"sector": sector})
+    )
+    assert present <= set(rows)
+    assert not (absent & set(rows))
+
+
+def test_rochefort_reads_the_single_letter_header_and_flipped_year_colours():
+    from waste_collection_schedule.service.FrenchColourCalendar import (
+        rochefort_ocean_rows,
+    )
+
+    document = [_rochefort_calendar(2027, short_weekdays=True)]
+    green = rochefort_ocean_rows(document, SimpleNamespace(params={"sector": "1"}))
+    blue = rochefort_ocean_rows(document, SimpleNamespace(params={"sector": "2"}))
+    # 4 January 2027 is ISO week 1 (odd), which is blue in the 2027 calendar.
+    assert (D(2027, 1, 4), "general") in blue
+    assert (D(2027, 1, 4), "general") not in green
+
+
+def test_rochefort_emits_a_collection_the_month_grid_does_not_draw():
+    from waste_collection_schedule.service.FrenchColourCalendar import (
+        rochefort_ocean_rows,
+    )
+
+    rows = rochefort_ocean_rows(
+        [_rochefort_calendar(missing={D(2026, 8, 31)})],
+        SimpleNamespace(params={"sector": "2"}),
+    )
+    # 31 August 2026 is absent from the August grid, but its week stays painted.
+    assert (D(2026, 8, 31), "general") in rows
+
+
+def test_rochefort_rejects_a_week_with_mixed_colours():
+    from waste_collection_schedule.service.FrenchColourCalendar import (
+        rochefort_ocean_rows,
+    )
+
+    document = _rochefort_calendar(mismatched={D(2026, 1, 6): "green"})
+    with pytest.raises(ResponseShapeError, match="mixed colours"):
+        rochefort_ocean_rows([document], SimpleNamespace(params={"sector": "1"}))
+
+
+def test_rochefort_classifies_the_printed_cmyk_and_rgb_fills():
+    from waste_collection_schedule.service.FrenchColourCalendar import _week_colour
+
+    assert _week_colour((0.3, 0.0, 1.0, 0.0)) == "green"
+    assert _week_colour((0.55, 0.23, 0.0, 0.0)) == "blue"
+    assert _week_colour((0.553, 0.706, 0.886)) == "blue"
+    assert _week_colour((1.0, 1.0, 1.0)) is None
