@@ -695,6 +695,7 @@
     "custom_components/waste_collection_schedule/waste_collection_schedule/source/grosswangen_ch.py",
     "custom_components/waste_collection_schedule/waste_collection_schedule/source/ritl_ca.py",
     "custom_components/waste_collection_schedule/waste_collection_schedule/service/KmlZones.py",
-    "custom_components/waste_collection_schedule/waste_collection_schedule/service/MarkedPdfCalendar.py"
+    "custom_components/waste_collection_schedule/waste_collection_schedule/service/MarkedPdfCalendar.py",
+    "custom_components/waste_collection_schedule/waste_collection_schedule/source/agglo_rochefortocean_fr.py"
   ]
 }

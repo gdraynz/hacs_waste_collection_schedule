@@ -53,7 +53,7 @@ class Source(BaseSource):
             raise_for_status=True,
         ),
         targets=lambda source, urls: urls,
-        fetch=retrievers.Request(lambda url, urls, **_: url, timeout=60),
+        fetch=retrievers.Request(lambda url, urls, **_: url, timeout=60, cache=True),
     )
     parse = parsers.EachResponse(
         parsers.PdfWordLayoutParser(min_words=300, min_vectors=100)

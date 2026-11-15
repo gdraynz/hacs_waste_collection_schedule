@@ -38,6 +38,7 @@ from waste_collection_schedule.exceptions import (
     SourceArgumentException,
     SourceArgumentExceptionMultiple,
 )
+from waste_collection_schedule.retrievers import Request
 
 # The family a source is expected to raise for bad input. SourceArgumentExceptionMultiple
 # is a sibling of SourceArgumentException rather than a subclass, so it has to be named.
@@ -72,6 +73,10 @@ def record(module_name: str) -> None:
     module = import_module(f"waste_collection_schedule.source.{module_name}")
     today = datetime.date.today().isoformat()
     for case_key, args in module.Source.TEST_CASES.items():
+        # A cassette must hold full response bodies. A cached GET (an annual
+        # PDF, say) would answer the second case with 304, which records no
+        # content and cannot be replayed offline.
+        Request.clear_cache()
         path = fixture_path(module_name, case_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         scrub = cassette_scrubbers.for_case(module_name, args, today)
