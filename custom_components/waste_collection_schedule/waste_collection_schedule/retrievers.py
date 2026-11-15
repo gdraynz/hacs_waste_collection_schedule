@@ -37,9 +37,11 @@ import datetime
 import json
 import logging
 import re
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol, TypeVar, cast
 from urllib.parse import urljoin
 from weakref import WeakKeyDictionary
 
@@ -1812,6 +1814,57 @@ def _with(value: Any, args: tuple, params: Mapping[str, Any]) -> Any:
     return value(*args, **params) if callable(value) else value
 
 
+class _CachedResponse:
+    """A GET body kept for conditional revalidation, plus its validators."""
+
+    __slots__ = ("etag", "last_modified", "response", "size")
+
+    def __init__(
+        self,
+        response: Response,
+        etag: str | None,
+        last_modified: str | None,
+    ):
+        self.response = response
+        self.etag = etag
+        self.last_modified = last_modified
+        content = getattr(response, "content", b"") or b""
+        self.size = len(content)
+
+    @classmethod
+    def from_response(cls, response: Response) -> _CachedResponse:
+        return cls(
+            response,
+            _header(response, "etag"),
+            _header(response, "last-modified"),
+        )
+
+    def validators(self) -> dict[str, str]:
+        headers = {}
+        if self.etag:
+            headers["If-None-Match"] = self.etag
+        if self.last_modified:
+            headers["If-Modified-Since"] = self.last_modified
+        return headers
+
+    def update(self, response: Response) -> None:
+        """Take the (possibly refreshed) validators from a 304."""
+        self.etag = _header(response, "etag") or self.etag
+        self.last_modified = _header(response, "last-modified") or self.last_modified
+
+
+def _header(response: Response, name: str) -> str | None:
+    """One response header, read case-insensitively, or ``None``."""
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted:
+            return value
+    return None
+
+
 class Request(_BaseRetriever):
     """One HTTP request, declared rather than written.
 
@@ -1882,7 +1935,28 @@ class Request(_BaseRetriever):
             chain from the leaf's AIA ``caIssuers`` URL and retries once (see
             :mod:`waste_collection_schedule.tls`). Never ``False`` in a new
             source.
+        cache: keep a GET response in memory and revalidate it on later
+            fetches with ``If-None-Match`` / ``If-Modified-Since``, returning
+            the stored body when the provider answers ``304 Not Modified``. For
+            a large document the provider republishes rarely (an annual PDF, an
+            ICS feed): the first fetch of a process downloads it, later fetches
+            cost a round trip. Only a response carrying an ``ETag`` or
+            ``Last-Modified`` is kept, since without one it can never be
+            revalidated. The cache lives for the process, is shared by every
+            entry requesting that URL (two sectors reading one PDF download it
+            once), and is bounded (8 documents, 64 MB).
     """
+
+    #: Bodies kept for conditional revalidation, and the bound on their total
+    #: size. Class-level because a retriever is a class attribute: two config
+    #: entries of the same source share one downloaded document.
+    CACHE_MAX_BYTES: ClassVar[int] = 64 * 1024 * 1024
+    CACHE_MAX_ENTRIES: ClassVar[int] = 8
+    _cache: ClassVar[
+        OrderedDict[tuple[str, tuple[tuple[str, str], ...]], _CachedResponse]
+    ] = OrderedDict()
+    _cache_bytes: ClassVar[int] = 0
+    _cache_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(
         self,
@@ -1906,6 +1980,7 @@ class Request(_BaseRetriever):
         raise_for_status: bool = True,
         timeout: int = 30,
         verify: tls.Verify = True,
+        cache: bool = False,
     ):
         if method.upper() not in ("GET", "POST"):
             raise ValueError(f"unknown Request method {method!r}: expected GET or POST")
@@ -1913,6 +1988,8 @@ class Request(_BaseRetriever):
             raise ValueError("Request retries must not be negative")
         if (data is not None or json is not None) and method.upper() != "POST":
             raise ValueError("Request data/json requires method='POST'")
+        if cache and method.upper() != "GET":
+            raise ValueError("Request cache=True requires method='GET'")
         self.url = url
         self.method = method.upper()
         self.params = params
@@ -1930,6 +2007,7 @@ class Request(_BaseRetriever):
         self.raise_for_status = raise_for_status
         self.timeout = timeout
         self.verify = verify
+        self.cache = cache
 
     def __call__(self, source: BaseSource, *args: Any) -> Any:
         """The response, or ``None`` when ``when`` ruled the request out."""
@@ -1951,28 +2029,114 @@ class Request(_BaseRetriever):
 
     def _send(self, source: BaseSource, args: tuple) -> Response:
         params = source.params
+        url = _with(self.url, args, params)
+        request_params = _with(self.params, args, params)
+        base_headers = _with(self.headers, args, params)
+
+        key = None
+        cached = None
+        headers = base_headers
+        if self.cache:
+            key = self._cache_key(url, request_params)
+            cached = self._cached(key)
+            if cached is not None:
+                headers = {**cached.validators(), **(base_headers or {})}
+
+        response = self._request(source, url, args, request_params, headers)
+        if cached is not None and response.status_code == 304:
+            cached.update(response)
+            return cached.response
+        if response.status_code == 304:
+            # Nothing stored to serve: the provider answered a conditional
+            # request with no validators behind it. Ask again unconditionally.
+            response = self._request(source, url, args, request_params, base_headers)
+        if self.raise_for_status:
+            response.raise_for_status()
+        if key is not None and response.status_code < 400:
+            entry = _CachedResponse.from_response(response)
+            if entry.etag or entry.last_modified:
+                self._remember(key, entry)
+            else:
+                # A 200 without validators replaced whatever was stored: do not
+                # keep the old body to answer a later 304 with stale content.
+                self._forget(key)
+        return response
+
+    def _request(
+        self,
+        source: BaseSource,
+        url: str,
+        args: tuple,
+        request_params: ParamsType,
+        headers: HeadersType,
+    ) -> Response:
         kwargs: dict[str, Any] = {
-            "params": _with(self.params, args, params),
-            "headers": _with(self.headers, args, params),
-            "cookies": _with(self.cookies, args, params),
+            "params": request_params,
+            "headers": headers,
+            "cookies": _with(self.cookies, args, source.params),
             "allow_redirects": self.allow_redirects,
             "timeout": self.timeout,
         }
-        url = _with(self.url, args, params)
         if self.method == "POST":
-            response = tls.send(
+            return tls.send(
                 source.session.post,
                 url,
                 self.verify,
-                data=_with(self.data, args, params),
-                json=_with(self.json, args, params),
+                data=_with(self.data, args, source.params),
+                json=_with(self.json, args, source.params),
                 **kwargs,
             )
-        else:
-            response = tls.send(source.session.get, url, self.verify, **kwargs)
-        if self.raise_for_status:
-            response.raise_for_status()
-        return response
+        return tls.send(source.session.get, url, self.verify, **kwargs)
+
+    @staticmethod
+    def _cache_key(url: str, params: Any) -> tuple[str, tuple[tuple[str, str], ...]]:
+        items = (
+            tuple(sorted((str(key), str(value)) for key, value in dict(params).items()))
+            if params
+            else ()
+        )
+        return (url, items)
+
+    @classmethod
+    def _cached(
+        cls, key: tuple[str, tuple[tuple[str, str], ...]]
+    ) -> _CachedResponse | None:
+        with cls._cache_lock:
+            entry = cls._cache.get(key)
+            if entry is not None:
+                cls._cache.move_to_end(key)
+            return entry
+
+    @classmethod
+    def _remember(
+        cls, key: tuple[str, tuple[tuple[str, str], ...]], entry: _CachedResponse
+    ) -> None:
+        with cls._cache_lock:
+            previous = cls._cache.pop(key, None)
+            if previous is not None:
+                cls._cache_bytes -= previous.size
+            cls._cache[key] = entry
+            cls._cache_bytes += entry.size
+            while cls._cache and (
+                cls._cache_bytes > cls.CACHE_MAX_BYTES
+                or len(cls._cache) > cls.CACHE_MAX_ENTRIES
+            ):
+                _, evicted = cls._cache.popitem(last=False)
+                cls._cache_bytes -= evicted.size
+
+    @classmethod
+    def _forget(cls, key: tuple[str, tuple[tuple[str, str], ...]]) -> None:
+        with cls._cache_lock:
+            previous = cls._cache.pop(key, None)
+            if previous is not None:
+                cls._cache_bytes -= previous.size
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Forget every cached body (for tests and cassette recording)."""
+        with cls._cache_lock:
+            cls._cache.clear()
+            cls._cache_bytes = 0
 
 
 def detached_source(params: Mapping[str, Any] | None = None) -> BaseSource:

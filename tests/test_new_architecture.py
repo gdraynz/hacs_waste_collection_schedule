@@ -1470,6 +1470,122 @@ class TestDeclaredRequests:
         assert request(source) is pages[2]
         assert source.session.get.call_count == 3
 
+    @staticmethod
+    def _pdf_response(
+        body: bytes = b"%PDF annual calendar",
+        *,
+        etag: str | None = '"af9394-64b00b1e8347f"',
+        last_modified: str | None = "Tue, 17 Feb 2026 08:16:57 GMT",
+        status: int = 200,
+    ):
+        headers = {}
+        if etag:
+            headers["etag"] = etag
+        if last_modified:
+            headers["last-modified"] = last_modified
+        return SimpleNamespace(
+            status_code=status,
+            content=body,
+            headers=headers,
+            raise_for_status=lambda: None,
+        )
+
+    def test_request_cache_revalidates_and_reuses_the_body(self):
+        from waste_collection_schedule import retrievers
+
+        retrievers.Request.clear_cache()
+        source = self._source()
+        first = self._pdf_response()
+        source.session.get.side_effect = [first, self._pdf_response(b"", status=304)]
+        request = retrievers.Request("https://x/calendar.pdf", cache=True)
+
+        assert request(source) is first
+        # The second fetch sends the stored validators and gets no body back.
+        assert request(source) is first
+        assert source.session.get.call_count == 2
+        assert source.session.get.call_args.kwargs["headers"] == {
+            "If-None-Match": '"af9394-64b00b1e8347f"',
+            "If-Modified-Since": "Tue, 17 Feb 2026 08:16:57 GMT",
+        }
+
+    def test_request_cache_keeps_urls_and_params_apart(self):
+        from waste_collection_schedule import retrievers
+
+        retrievers.Request.clear_cache()
+        source = self._source()
+        one = self._pdf_response()
+        two = self._pdf_response(etag='"second"')
+        source.session.get.side_effect = [
+            one,
+            two,
+            self._pdf_response(b"", status=304),
+            self._pdf_response(b"", status=304),
+        ]
+        request = retrievers.Request(
+            "https://x/calendar.pdf",
+            params=lambda sector, **_: {"sector": sector},
+            cache=True,
+        )
+
+        assert request(source, "1") is one
+        assert request(source, "2") is two
+        assert request(source, "1") is one
+        assert request(source, "2") is two
+        calls = source.session.get.call_args_list
+        assert calls[2].kwargs["headers"]["If-None-Match"] == '"af9394-64b00b1e8347f"'
+        assert calls[3].kwargs["headers"]["If-None-Match"] == '"second"'
+
+    def test_request_cache_keeps_nothing_without_a_validator(self):
+        from waste_collection_schedule import retrievers
+
+        retrievers.Request.clear_cache()
+        source = self._source()
+        first = self._pdf_response(etag=None, last_modified=None)
+        second = self._pdf_response(etag=None, last_modified=None)
+        source.session.get.side_effect = [first, second]
+        request = retrievers.Request("https://x", cache=True)
+
+        assert request(source) is first
+        assert request(source) is second
+        assert not source.session.get.call_args.kwargs["headers"]
+
+    def test_request_cache_drops_a_body_the_provider_stops_validating(self):
+        from waste_collection_schedule import retrievers
+
+        retrievers.Request.clear_cache()
+        source = self._source()
+        first = self._pdf_response()
+        changed = self._pdf_response(b"new body", etag=None, last_modified=None)
+        plain = self._pdf_response(b"third body", etag=None, last_modified=None)
+        source.session.get.side_effect = [first, changed, plain]
+        request = retrievers.Request("https://x", cache=True)
+
+        assert request(source) is first
+        assert request(source) is changed
+        # The provider stopped sending validators, so the old body is dropped
+        # rather than left to answer a later 304 with stale content.
+        assert request(source) is plain
+        assert not source.session.get.call_args.kwargs["headers"]
+
+    def test_request_cache_asks_again_when_a_304_has_nothing_stored(self):
+        from waste_collection_schedule import retrievers
+
+        retrievers.Request.clear_cache()
+        source = self._source()
+        full = self._pdf_response()
+        source.session.get.side_effect = [self._pdf_response(b"", status=304), full]
+        request = retrievers.Request("https://x", cache=True)
+
+        assert request(source) is full
+        assert source.session.get.call_count == 2
+        assert not source.session.get.call_args.kwargs["headers"]
+
+    def test_request_rejects_cache_on_a_post(self):
+        from waste_collection_schedule import retrievers
+
+        with pytest.raises(ValueError, match="cache"):
+            retrievers.Request("https://x", method="POST", cache=True)
+
     def test_lookup_picks_from_the_response_with_keys_and_params(self):
         from waste_collection_schedule import retrievers
 
