@@ -125,6 +125,30 @@ def _strathfield_nsw_gov_au(
         interaction["content_b64"] = base64.b64encode(output.getvalue()).decode("ascii")
 
 
+def _agglo_rochefortocean_fr(
+    interactions: list[dict], args: dict[str, Any], today: str
+) -> None:
+    """Keep only the calendar page and its vector colours, dropping photos."""
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.constants import ImageType
+
+    for interaction in interactions:
+        if ".pdf" not in interaction["url"].lower():
+            continue
+        reader = PdfReader(BytesIO(base64.b64decode(interaction["content_b64"])))
+        writer = PdfWriter()
+        writer.add_page(reader.pages[0])
+        writer.remove_images(ImageType.XOBJECT_IMAGES | ImageType.INLINE_IMAGES)
+        for page in writer.pages:
+            page.compress_content_streams()
+        writer.compress_identical_objects()
+        output = BytesIO()
+        writer.write(output)
+        interaction["content_b64"] = base64.b64encode(output.getvalue()).decode("ascii")
+
+
 def _sica_lu(interactions: list[dict], args: dict[str, Any], today: str) -> None:
     """Keep the configured commune's collections from the recording day on."""
     wanted = str(args["municipality"]).lower()
@@ -829,6 +853,7 @@ SCRUBBERS: dict[str, Scrubber] = {
     "koeniz_ch": _citymobile,
     "winterthur_ch": _citymobile,
     "zab_ch": _citymobile,
+    "agglo_rochefortocean_fr": _agglo_rochefortocean_fr,
     "tamax_net_pl": _tamax,
     "tamax_imielno_pl": _tamax,
     "tamax_janow_pl": _tamax,
