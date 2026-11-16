@@ -20,7 +20,7 @@ _PDF = (
 class Source(BaseSource):
     TITLE = "Rochefort Océan (Rochefort)"
     DESCRIPTION = "Waste collection dates for Rochefort (Rochefort Océan), France."
-    URL = "https://www.agglo-rochefortocean.fr"
+    URL = _INDEX
     COUNTRY = "fr"
     RAISE_ON_EMPTY = True
     SOURCE_CODEOWNERS: ClassVar[list[str]] = ["@gdraynz"]
@@ -35,14 +35,14 @@ class Source(BaseSource):
 
     HOWTO: ClassVar[dict[str, str]] = {
         "en": (
-            "Find your sector on the map in the “Calendrier de collecte "
-            "Rochefort” PDF at https://www.agglo-rochefortocean.fr/collecte-et-tri "
-            "and select it here. Collections are maintained on public holidays."
+            "Your sector is the one shown on the map printed on the back of the "
+            "yearly “Calendrier de collecte Rochefort” PDF, which also lists the "
+            "collection days. Collections are maintained on public holidays."
         ),
         "fr": (
-            "Repérez votre secteur sur la carte du calendrier de collecte "
-            "Rochefort disponible sur https://www.agglo-rochefortocean.fr/collecte-et-tri, "
-            "puis sélectionnez-le. Les collectes sont maintenues les jours fériés."
+            "Votre secteur est celui de la carte imprimée au verso du calendrier "
+            "de collecte annuel de Rochefort, qui indique aussi les jours de "
+            "collecte. Les collectes sont maintenues les jours fériés."
         ),
     }
 
