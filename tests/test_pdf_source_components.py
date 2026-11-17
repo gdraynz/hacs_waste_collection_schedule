@@ -113,7 +113,7 @@ def _grand_lieu_calendar():
         PdfVector,
         PdfWordLayout,
     )
-    from waste_collection_schedule.service.FrenchColourCalendar import _MONTHS
+    from waste_collection_schedule.service.FrenchColourCalendar import MONTHS
 
     line = PdfTextFragment
     colours = ((0.98, 0.84, 0.79), (0.86, 0.89, 0.93))
@@ -132,7 +132,7 @@ def _grand_lieu_calendar():
         weekday = line(0, day, 70, y)
         words.append(weekday)
         vectors.append(PdfVector(0, 60, y - 5, 80, y + 5, None, colours[parity]))
-    for month, name in enumerate(_MONTHS, 1):
+    for month, name in enumerate(MONTHS, 1):
         x = 130 + month * 60
         words.append(line(0, name.upper(), x, 550))
         for day in range(1, calendar.monthrange(2026, month)[1] + 1):
@@ -193,7 +193,7 @@ def test_french_calendar_area_matching_uses_polygon_not_overlapping_bounds():
     from waste_collection_schedule.parsers import PdfPolygon, PdfTextFragment
     from waste_collection_schedule.service.FrenchColourCalendar import (
         _contains,
-        _normalise,
+        normalise,
     )
 
     area = PdfPolygon(
@@ -201,7 +201,7 @@ def test_french_calendar_area_matching_uses_polygon_not_overlapping_bounds():
     )
     assert _contains(area, PdfTextFragment(0, "A", 2, 2))
     assert not _contains(area, PdfTextFragment(0, "B", 8, 8))
-    assert _normalise("Beillé") == "beille"
+    assert normalise("Beillé") == "beille"
 
 
 def test_french_calendar_year_does_not_treat_an_address_number_as_a_year():
@@ -3167,9 +3167,9 @@ def _rochefort_calendar(
         PdfVector,
         PdfWordLayout,
     )
-    from waste_collection_schedule.service.FrenchColourCalendar import _MONTHS
+    from waste_collection_schedule.service.FrenchColourCalendar import MONTHS
 
-    month_names = list(_MONTHS)
+    month_names = list(MONTHS)
     green = (0.3, 0.0, 1.0, 0.0)
     blue = (0.55, 0.23, 0.0, 0.0)
     colours = {"green": green, "blue": blue}
@@ -3268,11 +3268,11 @@ def _rochefort_calendar(
     ],
 )
 def test_rochefort_sector_rules(sector, present, absent):
-    from waste_collection_schedule.service.FrenchColourCalendar import (
-        rochefort_ocean_rows,
+    from waste_collection_schedule.source.agglo_rochefortocean_fr import (
+        collection_rows,
     )
 
-    rows = rochefort_ocean_rows(
+    rows = collection_rows(
         [_rochefort_calendar()], SimpleNamespace(params={"sector": sector})
     )
     assert present <= set(rows)
@@ -3280,24 +3280,24 @@ def test_rochefort_sector_rules(sector, present, absent):
 
 
 def test_rochefort_reads_the_single_letter_header_and_flipped_year_colours():
-    from waste_collection_schedule.service.FrenchColourCalendar import (
-        rochefort_ocean_rows,
+    from waste_collection_schedule.source.agglo_rochefortocean_fr import (
+        collection_rows,
     )
 
     document = [_rochefort_calendar(2027, short_weekdays=True)]
-    green = rochefort_ocean_rows(document, SimpleNamespace(params={"sector": "1"}))
-    blue = rochefort_ocean_rows(document, SimpleNamespace(params={"sector": "2"}))
+    green = collection_rows(document, SimpleNamespace(params={"sector": "1"}))
+    blue = collection_rows(document, SimpleNamespace(params={"sector": "2"}))
     # 4 January 2027 is ISO week 1 (odd), which is blue in the 2027 calendar.
     assert (D(2027, 1, 4), "general") in blue
     assert (D(2027, 1, 4), "general") not in green
 
 
 def test_rochefort_emits_a_collection_the_month_grid_does_not_draw():
-    from waste_collection_schedule.service.FrenchColourCalendar import (
-        rochefort_ocean_rows,
+    from waste_collection_schedule.source.agglo_rochefortocean_fr import (
+        collection_rows,
     )
 
-    rows = rochefort_ocean_rows(
+    rows = collection_rows(
         [_rochefort_calendar(missing={D(2026, 8, 31)})],
         SimpleNamespace(params={"sector": "2"}),
     )
@@ -3306,17 +3306,17 @@ def test_rochefort_emits_a_collection_the_month_grid_does_not_draw():
 
 
 def test_rochefort_rejects_a_week_with_mixed_colours():
-    from waste_collection_schedule.service.FrenchColourCalendar import (
-        rochefort_ocean_rows,
+    from waste_collection_schedule.source.agglo_rochefortocean_fr import (
+        collection_rows,
     )
 
     document = _rochefort_calendar(mismatched={D(2026, 1, 6): "green"})
     with pytest.raises(ResponseShapeError, match="mixed colours"):
-        rochefort_ocean_rows([document], SimpleNamespace(params={"sector": "1"}))
+        collection_rows([document], SimpleNamespace(params={"sector": "1"}))
 
 
 def test_rochefort_classifies_the_printed_cmyk_and_rgb_fills():
-    from waste_collection_schedule.service.FrenchColourCalendar import _week_colour
+    from waste_collection_schedule.source.agglo_rochefortocean_fr import _week_colour
 
     assert _week_colour((0.3, 0.0, 1.0, 0.0)) == "green"
     assert _week_colour((0.55, 0.23, 0.0, 0.0)) == "blue"
