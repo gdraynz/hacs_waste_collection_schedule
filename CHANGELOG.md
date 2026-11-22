@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 Releases are listed in reverse chronological order.
 
+## [3.0.0-beta.13] - 2026-11-22
+
+Fork pre-release built on 3.0.0-beta.12. It adds the Agglo de Rochefort Océan source and makes the shared HTTP retrievers revalidate cached responses with `ETag`/`Last-Modified`.
+
+### Added Sources
+
+- added Rochefort Océan (Rochefort) (agglo_rochefortocean_fr), France
+
+### Other
+
+- retrievers: revalidate cached GETs with `ETag`/`Last-Modified` instead of trusting stale entries
+
 ## [3.0.0-beta.12] - 2026-11-15
 
 This is a pre-release (beta) following beta.11. It retires five named ICS presets in favour of dedicated pipeline sources, migrates `lerum_se` to the BaseSource pipeline, adds one new source, per-waste-type `day_offset`, three new display languages (Slovak, Polish, Croatian) and a number of source fixes. If you tried an earlier beta, please update; if you haven't yet, opt in via HACS' "show beta versions" toggle. Report problems as regular GitHub issues. Stable installs are unaffected until 3.0.0 ships. Users skipping earlier betas should also read the migration/breaking-change notes of beta.9.
